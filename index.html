@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Générateur de Voix IA - TTS</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f7f7;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            min-height: 100vh;
+            padding-top: 2rem;
+        }
+        .container {
+            background: white;
+            padding: 2rem;
+            border-radius: 1rem;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+            max-width: 600px;
+            width: 90%;
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+        }
+        textarea {
+            resize: none;
+            min-height: 150px;
+            border: 2px solid #ddd;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            transition: border-color 0.2s;
+        }
+        textarea:focus {
+            outline: none;
+            border-color: #3b82f6; /* Blue-500 */
+        }
+        button {
+            transition: background-color 0.2s, transform 0.1s;
+        }
+        button:hover:not(:disabled) {
+            background-color: #2563eb; /* Blue-700 */
+        }
+        button:active:not(:disabled) {
+            transform: scale(0.98);
+        }
+        .loading-indicator {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3b82f6;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+            margin-right: 0.5rem;
+            display: none;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .voice-option {
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            cursor: pointer;
+            transition: background-color 0.2s;
+            border: 2px solid #e5e7eb;
+            text-align: center;
+        }
+        .voice-option.selected {
+            background-color: #bfdbfe; /* Blue-200 */
+            border-color: #3b82f6; /* Blue-500 */
+            font-weight: 600;
+        }
+        .voice-option:hover {
+            background-color: #eff6ff;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1 class="text-3xl font-extrabold text-gray-800 text-center mb-4">
+        Voix IA : Lancement Immediat !
+    </h1>
+    
+    <p class="text-sm text-gray-600">
+        Tapez votre texte et choisissez une voix pour le convertir en audio fonctionnel.
+    </p>
+
+    <textarea id="textInput" placeholder="Tapez ici les paroles de votre chanson ou votre message..." class="focus:ring-2 focus:ring-blue-500" maxlength="500">
+Le soleil brille, mais j'ai oublié mes clés, c'est une chanson pop joyeuse !
+    </textarea>
+
+    <div class="flex flex-col gap-2">
+        <label class="font-semibold text-gray-700">Choisissez une Voix :</label>
+        <div id="voice-selection" class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            <!-- Les options de voix seront générées ici -->
+        </div>
+    </div>
+    
+    <button id="generateButton" 
+            class="flex items-center justify-center bg-blue-600 text-white font-bold py-3 px-6 rounded-xl hover:bg-blue-700 disabled:bg-gray-400">
+        <div id="loadingSpinner" class="loading-indicator"></div>
+        <span id="buttonText">Générer et Jouer la Voix de l'IA</span>
+    </button>
+    
+    <!-- NOUVEAU: Bouton de Téléchargement -->
+    <button id="downloadButton" 
+            class="hidden bg-green-500 text-white font-bold py-3 px-6 rounded-xl hover:bg-green-600"
+            onclick="downloadAudio()">
+        Télécharger la Voix (.wav)
+    </button>
+    
+    <div id="statusMessage" class="text-center text-sm font-medium text-gray-600 min-h-[20px]">
+        Prêt à convertir.
+    </div>
+</div>
+
+<script>
+    // Configuration et utilitaires nécessaires pour l'API TTS
+
+    // Global variables required by the Canvas environment
+    const apiKey = "";
+    const apiUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent';
+    
+    // Voices available for French (fr-FR is the auto-detected language)
+    const voices = [
+        { name: "Puck", description: "Enthousiaste" },
+        { name: "Charon", description: "Informatif" },
+        { name: "Kore", description: "Ferme" },
+        { name: "Fenrir", description: "Excitable" },
+    ];
+
+    let selectedVoice = voices[0].name;
+    let audioBlob = null; // Variable globale pour stocker le Blob audio
+
+    const textInput = document.getElementById('textInput');
+    const generateButton = document.getElementById('generateButton');
+    const downloadButton = document.getElementById('downloadButton'); // NOUVEAU
+    const loadingSpinner = document.getElementById('loadingSpinner');
+    const buttonText = document.getElementById('buttonText');
+    const statusMessage = document.getElementById('statusMessage');
+    const voiceSelection = document.getElementById('voice-selection');
+    
+    // --- UTILITIES FOR AUDIO PROCESSING ---
+
+    // Utility function to convert Base64 string to ArrayBuffer
+    const base64ToArrayBuffer = (base64) => {
+        const binaryString = atob(base64);
+        const len = binaryString.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+        return bytes.buffer;
+    };
+
+    // Utility function to convert PCM audio data to WAV format (required for playback)
+    const pcmToWav = (pcm16, sampleRate) => {
+        const buffer = new ArrayBuffer(44 + pcm16.length * 2);
+        const view = new DataView(buffer);
+        
+        // RIFF chunk descriptor
+        writeString(view, 0, 'RIFF');
+        view.setUint32(4, 36 + pcm16.length * 2, true);
+        writeString(view, 8, 'WAVE');
+        
+        // FMT sub-chunk
+        writeString(view, 12, 'fmt ');
+        view.setUint32(16, 16, true); // Sub-chunk size
+        view.setUint16(20, 1, true); // Audio format (1 for PCM)
+        view.setUint16(22, 1, true); // Number of channels
+        view.setUint32(24, sampleRate, true); // Sample rate
+        view.setUint32(28, sampleRate * 2, true); // Byte rate
+        view.setUint16(32, 2, true); // Block align
+        view.setUint16(34, 16, true); // Bits per sample
+        
+        // DATA sub-chunk
+        writeString(view, 36, 'data');
+        view.setUint32(40, pcm16.length * 2, true); // Sub-chunk size
+        
+        // Write PCM data
+        let offset = 44;
+        for (let i = 0; i < pcm16.length; i++) {
+            view.setInt16(offset, pcm16[i], true);
+            offset += 2;
+        }
+        
+        // STOCKAGE DU BLOB DANS LA VARIABLE GLOBALE
+        return new Blob([view], { type: 'audio/wav' });
+    };
+
+    const writeString = (view, offset, string) => {
+        for (let i = 0; i < string.length; i++) {
+            view.setUint8(offset + i, string.charCodeAt(i));
+        }
+    };
+    
+    // --- NOUVELLE FONCTION DE TÉLÉCHARGEMENT ---
+    window.downloadAudio = () => {
+        if (!audioBlob) {
+            statusMessage.textContent = "❌ Erreur : Aucun audio à télécharger. Générez-le d'abord.";
+            return;
+        }
+
+        // Création d'un lien temporaire pour le téléchargement
+        const audioUrl = URL.createObjectURL(audioBlob);
+        const link = document.createElement('a');
+        link.href = audioUrl;
+        
+        // Utilisation du début du texte comme nom de fichier
+        const fileName = textInput.value.trim().substring(0, 30).replace(/[^a-zA-Z0-9]/g, '_') || 'ia_voice';
+        link.download = `${fileName}.wav`;
+        
+        // Simulation du clic pour démarrer le téléchargement
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(audioUrl); // Libération de la mémoire
+        
+        statusMessage.textContent = `✅ Téléchargement de "${link.download}" lancé !`;
+    };
+    // --- FIN NOUVELLE FONCTION DE TÉLÉCHARGEMENT ---
+
+
+    // --- VOICE SELECTION UI LOGIC ---
+
+    const selectVoice = (voiceName) => {
+        selectedVoice = voiceName;
+        // Update UI selection state
+        document.querySelectorAll('.voice-option').forEach(el => {
+            el.classList.remove('selected');
+            if (el.dataset.voice === voiceName) {
+                el.classList.add('selected');
+            }
+        });
+        statusMessage.textContent = `Voix sélectionnée : ${voiceName} (${voices.find(v => v.name === voiceName).description}).`;
+        downloadButton.classList.add('hidden'); // Cacher le bouton après changement de voix
+        audioBlob = null;
+    };
+
+    const initializeVoiceOptions = () => {
+        voices.forEach((v, index) => {
+            const div = document.createElement('div');
+            div.className = 'voice-option text-xs';
+            div.dataset.voice = v.name;
+            div.textContent = `${v.name} (${v.description})`;
+            div.onclick = () => selectVoice(v.name);
+
+            if (index === 0) {
+                div.classList.add('selected');
+            }
+            voiceSelection.appendChild(div);
+        });
+    };
+
+    // --- MAIN API LOGIC ---
+
+    const generateSpeech = async (text, voiceName) => {
+        const payload = {
+            contents: [{
+                parts: [{ text: text }]
+            }],
+            generationConfig: {
+                responseModalities: ["AUDIO"],
+                speechConfig: {
+                    voiceConfig: {
+                        prebuiltVoiceConfig: { voiceName: voiceName }
+                    }
+                }
+            },
+            model: "gemini-2.5-flash-preview-tts"
+        };
+
+        const headers = { 'Content-Type': 'application/json' };
+        
+        // Implement exponential backoff for retries
+        for (let attempt = 0; attempt < 5; attempt++) {
+            try {
+                const response = await fetch(`${apiUrl}?key=${apiKey}`, {
+                    method: 'POST',
+                    headers: headers,
+                    body: JSON.stringify(payload)
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const result = await response.json();
+                const part = result?.candidates?.[0]?.content?.parts?.[0];
+                const audioData = part?.inlineData?.data;
+                const mimeType = part?.inlineData?.mimeType;
+
+                if (audioData && mimeType && mimeType.startsWith("audio/")) {
+                    const rateMatch = mimeType.match(/rate=(\d+)/);
+                    if (!rateMatch) throw new Error("Could not detect sample rate from API response.");
+                    
+                    const sampleRate = parseInt(rateMatch[1], 10);
+                    const pcmData = base64ToArrayBuffer(audioData);
+                    const pcm16 = new Int16Array(pcmData);
+                    
+                    // Conversion et STOCKAGE du Blob
+                    audioBlob = pcmToWav(pcm16, sampleRate); 
+                    
+                    // Lecture de l'audio
+                    const audioUrl = URL.createObjectURL(audioBlob);
+                    const audio = new Audio(audioUrl);
+                    
+                    audio.onended = () => URL.revokeObjectURL(audioUrl);
+                    
+                    audio.play();
+                    statusMessage.textContent = `✅ Succès ! Lecture en cours avec la voix de ${voiceName}.`;
+                    
+                    // AFFICHER le bouton de téléchargement après succès
+                    downloadButton.classList.remove('hidden'); 
+                    
+                    return; // Success, exit function
+                } else {
+                    throw new Error("API response is missing audio data.");
+                }
+
+            } catch (error) {
+                console.error("API Call Error:", error);
+                if (attempt === 4) {
+                    statusMessage.textContent = `❌ Échec après plusieurs tentatives : ${error.message}`;
+                    return;
+                }
+                // Exponential backoff delay
+                const delay = Math.pow(2, attempt) * 1000;
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
+        }
+    };
+
+    // --- EVENT HANDLER ---
+
+    generateButton.addEventListener('click', async () => {
+        const text = textInput.value.trim();
+        if (text.length === 0) {
+            statusMessage.textContent = "Veuillez entrer du texte à convertir.";
+            return;
+        }
+
+        generateButton.disabled = true;
+        downloadButton.classList.add('hidden'); // Cacher le bouton de téléchargement
+        audioBlob = null; // Réinitialiser le Blob
+
+        loadingSpinner.style.display = 'inline-block';
+        buttonText.textContent = 'Génération en cours...';
+        statusMessage.textContent = 'Connexion à l\'IA...';
+
+        try {
+            await generateSpeech(text, selectedVoice);
+        } finally {
+            generateButton.disabled = false;
+            loadingSpinner.style.display = 'none';
+            buttonText.textContent = 'Générer et Jouer la Voix de l\'IA';
+        }
+    });
+
+    // Initialize on load
+    window.onload = initializeVoiceOptions;
+
+</script>
+</body>
+</html>
